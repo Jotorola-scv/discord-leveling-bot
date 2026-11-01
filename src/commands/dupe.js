@@ -173,7 +173,7 @@ function view(interaction, guildId) {
     .setColor(0x1abc9c)
     .setDescription(lines.join('\n\n'))
     .addFields({ name: '不列入去重的網域', value: ignored.length ? ignored.map((d) => `\`${d}\``).join('、') : '（無）' })
-    .setFooter({ text: `本次啟動以來：新記 ${num(dupeStats.recorded)} · 攔到重複 ${num(dupeStats.duplicates)} · 刪除 ${num(dupeStats.deleted)} · 失敗 ${num(dupeStats.failed)}` });
+    .setFooter({ text: `本次啟動以來：新記 ${num(dupeStats.recorded)} · 攔到重複 ${num(dupeStats.duplicates)} · 刪除 ${num(dupeStats.deleted)} · 連帶預覽 ${num(dupeStats.previews)} · 失敗 ${num(dupeStats.failed)}` });
   return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
@@ -253,6 +253,7 @@ async function purge(interaction, guildId) {
     `讀了 ${stats.channels} 個頻道／討論串、${num(stats.messages)} 則訊息、${num(stats.links)} 條連結`,
     `找到 ${num(stats.duplicates)} 則重複訊息` + (confirmed ? `　→ 已刪 ${num(stats.deleted)} 則` : ''),
   ];
+  if (stats.previews > 0) lines.push(`🖼️ 連帶刪掉 ${num(stats.previews)} 則預覽 Bot 的訊息。`);
   if (stats.pinned > 0) lines.push(`📌 ${stats.pinned} 則是釘選訊息，一律不動。`);
   if (stats.failed > 0) lines.push(`⚠️ ${stats.failed} 則刪除失敗（看 log）。`);
   if (stats.capped) lines.push(`⚠️ 單次上限 ${SWEEP_DELETE_CAP} 則，已達上限 → 再跑一次把剩下的清完。`);
