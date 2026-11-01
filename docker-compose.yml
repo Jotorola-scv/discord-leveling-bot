@@ -1,0 +1,19 @@
+services:
+  discord-leveling-bot:
+    build: .
+    image: discord-leveling-bot
+    container_name: discord-leveling-bot
+    restart: unless-stopped
+    # 這是 gateway bot：只對外連出去，不需要任何 ports:
+    user: "1026:100"
+    env_file:
+      - /volume1/homes/dannyho/deployment_secret_files/discord-leveling-bot/bot.env
+    environment:
+      TZ: Asia/Taipei
+    volumes:
+      - /volume1/homes/dannyho/deployment_datas/discord-leveling-bot:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
