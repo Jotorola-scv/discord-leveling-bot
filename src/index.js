@@ -2,7 +2,7 @@ import { Client, GatewayIntentBits, Events, MessageFlags, Partials, REST, Routes
 import { commands, commandMap } from './commands/index.js';
 import { awardForMessage, awardForReaction, applyRewards, cancelPending } from './lib/xp.js';
 import { handleStickerTriggers } from './lib/triggers.js';
-import { handleLinkDupes } from './lib/dupe.js';
+import { handleLinkDupes, handleLatePreview } from './lib/dupe.js';
 import { handleAiFilter } from './lib/aifilter.js';
 import { getMember, closeDb, forgetDupeLinksByMessage } from './lib/db.js';
 
@@ -67,6 +67,8 @@ async function registerCommands(clientId) {
 client.on(Events.MessageCreate, async (message) => {
   try {
     if (!message.inGuild()) return;
+    // 預覽 Bot 可能比去重的刪除還晚到，要在濾掉 Bot 之前看
+    if (message.author.bot) await handleLatePreview(message);
     if (message.author.bot || message.webhookId) return;
     if (message.system) return;
 

@@ -4,7 +4,7 @@ import {
   listDupeLinksByMessage, forgetDupeLink,
 } from './db.js';
 
-export const dupeStats = { recorded: 0, duplicates: 0, deleted: 0, failed: 0 };
+export const dupeStats = { recorded: 0, duplicates: 0, deleted: 0, failed: 0, previews: 0 };
 
 // 訊息裡的網址。排除 <> 包起來的、以及 markdown 連結的括號
 const URL_RE = /https?:\/\/[^\s<>()[\]"'`|\\]+/gi;
@@ -222,6 +222,101 @@ function warnMissingManageMessages(channel, zone) {
   );
 }
 
+// ---------- 連帶刪除預覽 Bot 的訊息 ----------
+
+// 預設是 ermiana：預覽是回覆原訊息，影片等附加連結接著發成獨立的「[連結](url)」訊息。
+// PREVIEW_BOT_IDS 可換成別的 Bot（逗號分隔），設成空字串就關閉。
+const PREVIEW_BOT_IDS = new Set(
+  (process.env.PREVIEW_BOT_IDS ?? '1078919650764652594').split(',').map((id) => id.trim()).filter(Boolean)
+);
+const PREVIEW_MEDIA_RE = /^(\|\|)?\[連結\]\(\S+\)(\|\|)?$/;
+const LATE_PREVIEW_MS = 2 * 60 * 1000;
+const LATE_MEDIA_MS = 30 * 1000;
+
+// 預覽 Bot 要先抓資料才發文，可能比我們的刪除還晚到，所以要記住剛刪了什麼
+const deletedSources = new Map(); // 被刪訊息 id -> 到期時間
+const openMediaTails = new Map(); // 頻道 id -> 到期時間：預覽剛被刪，它的附加連結可能還在路上
+
+const isPreviewBotMessage = (m) => PREVIEW_BOT_IDS.has(m.author?.id) && !m.webhookId;
+const isPreviewMedia = (m) => !m.reference && PREVIEW_MEDIA_RE.test(m.content ?? '');
+
+function rememberUntil(map, key, ms) {
+  const now = Date.now();
+  for (const [k, expires] of map) if (expires <= now) map.delete(k);
+  map.set(key, now + ms);
+}
+
+const stillActive = (map, key) => (map.get(key) ?? 0) > Date.now();
+
+/**
+ * 某則訊息底下的預覽：回覆它的那些，加上緊接著發的附加連結。
+ * 碰到預覽 Bot 回覆別則訊息就停，那之後的附加連結是別人的。
+ */
+function findPreviews(sourceId, botMessages) {
+  const previews = [];
+  let inTail = false;
+  const ordered = [...botMessages].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  for (const m of ordered) {
+    if (m.reference?.messageId === sourceId) {
+      previews.push(m);
+      inTail = true;
+    } else if (m.reference) {
+      inTail = false;
+    } else if (inTail && isPreviewMedia(m)) {
+      previews.push(m);
+    }
+  }
+  return { previews, inTail };
+}
+
+/** 預覽刪失敗不影響去重本身；已經不在了（10008）不算錯 */
+async function deletePreview(message) {
+  try {
+    await message.delete();
+    dupeStats.previews++;
+    return true;
+  } catch (err) {
+    if (err?.code !== 10008) console.warn(`[dupe] 刪除預覽 ${message.id} 失敗: ${err.message}`);
+    return false;
+  }
+}
+
+/** 刪掉重複訊息，連同已經發出來的預覽。沒刪成功會丟錯，預覽也不會動 */
+async function deleteWithPreviews(message) {
+  // 先記再刪：預覽可能剛好在刪除途中送達
+  rememberUntil(deletedSources, message.id, LATE_PREVIEW_MS);
+  try {
+    await message.delete();
+  } catch (err) {
+    deletedSources.delete(message.id);
+    throw err;
+  }
+
+  const after = await message.channel.messages.fetch({ after: message.id, limit: 50 }).catch(() => null);
+  if (!after) return;
+  const { previews, inTail } = findPreviews(message.id, [...after.values()].filter(isPreviewBotMessage));
+  await Promise.all(previews.map(deletePreview));
+  if (inTail) rememberUntil(openMediaTails, message.channel.id, LATE_MEDIA_MS);
+}
+
+/** 預覽 Bot 的新訊息：對象已經被當重複刪掉的話，這則也不留 */
+export async function handleLatePreview(message) {
+  if (!isPreviewBotMessage(message)) return false;
+  const channelId = message.channel.id;
+  const sourceId = message.reference?.messageId;
+
+  if (sourceId) {
+    if (!stillActive(deletedSources, sourceId)) {
+      openMediaTails.delete(channelId); // 別則訊息的預覽，之後的附加連結不是我們要刪的
+      return false;
+    }
+    rememberUntil(openMediaTails, channelId, LATE_MEDIA_MS);
+  } else if (!isPreviewMedia(message) || !stillActive(openMediaTails, channelId)) {
+    return false;
+  }
+  return deletePreview(message);
+}
+
 /**
  * 監看區裡的重複連結處理。每區各自獨立：同一條連結在深水區貼過，淺水區還是能貼。
  * 跟 XP／關鍵字觸發完全無關，不給也不扣 XP。
@@ -277,7 +372,7 @@ export async function handleLinkDupes(message) {
   if (zone.action === 'delete') {
     if (perms?.has(PermissionFlagsBits.ManageMessages)) {
       try {
-        await message.delete();
+        await deleteWithPreviews(message);
         deleted = true;
         dupeStats.deleted++;
       } catch (err) {
@@ -381,7 +476,7 @@ export async function sweepZone(guild, zone, {
   const seen = new Map(); // norm -> { messageId, channelId }
   const stats = {
     channels: 0, skipped: [], noPermission: [], messages: 0, links: 0,
-    recorded: 0, duplicates: 0, pinned: 0, deleted: 0, failed: 0, capped: false,
+    recorded: 0, duplicates: 0, pinned: 0, deleted: 0, previews: 0, failed: 0, capped: false,
   };
   const plan = [];
 
@@ -394,6 +489,7 @@ export async function sweepZone(guild, zone, {
   // 先把整區的訊息全抓下來，再**跨頻道**照時間排序：
   // 「留最早那則」是以整個分區為準，不是各頻道各留一則
   const canDeleteIn = new Map();
+  const previewBotMessages = new Map(); // 頻道 id -> 預覽 Bot 的訊息
   const timeline = [];
 
   for (const channel of channels) {
@@ -407,8 +503,9 @@ export async function sweepZone(guild, zone, {
     if (deleteDupes && !canDelete) stats.noPermission.push(channel.name ?? channel.id);
     stats.channels++;
 
-    const messages = (await fetchHistory(channel, perChannel))
-      .filter((m) => !m.author?.bot && !m.webhookId);
+    const history = await fetchHistory(channel, perChannel);
+    previewBotMessages.set(channel.id, history.filter(isPreviewBotMessage));
+    const messages = history.filter((m) => !m.author?.bot && !m.webhookId);
     stats.messages += messages.length;
     for (const message of messages) timeline.push({ channel, message });
   }
@@ -447,6 +544,10 @@ export async function sweepZone(guild, zone, {
           stats.deleted++;
           if (onProgress && stats.deleted % 25 === 0) await onProgress(stats);
           await sleep(350); // 給 Discord 的刪訊速率留餘裕
+          for (const preview of findPreviews(m.id, previewBotMessages.get(channel.id)).previews) {
+            if (await deletePreview(preview)) stats.previews++;
+            await sleep(350);
+          }
         } catch (err) {
           stats.failed++;
           console.warn(`[dupe] 清理時刪 ${m.id} 失敗: ${err.message}`);
