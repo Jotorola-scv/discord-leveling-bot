@@ -318,6 +318,31 @@ export async function handleLatePreview(message) {
 }
 
 /**
+ * 刪掉重複之後 mention 當事人，有設貼圖就附上。
+ * 貼圖被刪或不能用時退回純文字，不讓這一步把去重弄壞。
+ */
+async function sendDeleteNotice(message, zone, perms) {
+  if (!perms?.has(PermissionFlagsBits.SendMessages)) return;
+  const allowedMentions = { users: [message.author.id] };
+  const text = {
+    content: `🔁 ${message.author} 這條連結在 **${zone.zone}** 已經有人貼過了。`,
+    allowedMentions,
+  };
+  try {
+    await message.channel.send(zone.delete_sticker_id
+      ? { content: `${message.author}`, stickers: [zone.delete_sticker_id], allowedMentions }
+      : text);
+  } catch (err) {
+    if (!zone.delete_sticker_id) {
+      console.warn(`[dupe] 刪除通知發送失敗: ${err.message}`);
+      return;
+    }
+    console.warn(`[dupe] ${zone.zone} 的貼圖 ${zone.delete_sticker_id} 發不出去（${err.message}），改發文字`);
+    await message.channel.send(text).catch((e) => console.warn(`[dupe] 刪除通知發送失敗: ${e.message}`));
+  }
+}
+
+/**
  * 監看區裡的重複連結處理。每區各自獨立：同一條連結在深水區貼過，淺水區還是能貼。
  * 跟 XP／關鍵字觸發完全無關，不給也不扣 XP。
  */
@@ -384,7 +409,9 @@ export async function handleLinkDupes(message) {
     }
   }
 
-  // 刪掉就不吭聲，當事人不另行通知。只有「沒刪」的情況才需要講一句
+  if (deleted && zone.delete_ping) await sendDeleteNotice(message, zone, perms);
+
+  // 刪除通知預設關閉（靜默刪除）。「沒刪」的情況才需要講一句
   if (!deleted && zone.notice_seconds > 0 && perms?.has(PermissionFlagsBits.SendMessages)) {
     const lines = [
       `🔁 ${message.author} 這條連結在 **${zone.zone}** 已經有人貼過了。`,
