@@ -7,7 +7,10 @@ import {
   findDupeLinkAnyZone, forgetDupeLink,
   listDupeIgnoredDomains, addDupeIgnoredDomain, removeDupeIgnoredDomain,
 } from '../lib/db.js';
-import { dupeStats, normalizeUrl, scanZone, sweepZone, expandZoneChannels, SWEEP_DELETE_CAP } from '../lib/dupe.js';
+import {
+  dupeStats, normalizeUrl, scanZone, sweepZone, expandZoneChannels, SWEEP_DELETE_CAP,
+  DEFAULT_DELETE_MESSAGE, renderEmojis,
+} from '../lib/dupe.js';
 import { num } from '../lib/format.js';
 
 const ACTION_LABEL = { delete: '刪除重複訊息', warn: '只提示不刪', off: '停用' };
@@ -48,7 +51,10 @@ export const data = new SlashCommandBuilder()
     .addStringOption((o) => o.setName('zone').setDescription('分區').setAutocomplete(true).setRequired(true))
     .addBooleanOption((o) => o.setName('enabled').setDescription('true = 刪除時 @ 當事人；false = 靜默刪除').setRequired(true))
     .addStringOption((o) => o.setName('sticker')
-      .setDescription('一起貼出的伺服器貼圖；留空沿用目前設定').setAutocomplete(true)))
+      .setDescription('一起貼出的伺服器貼圖；留空沿用目前設定').setAutocomplete(true))
+    .addStringOption((o) => o.setName('message')
+      .setDescription('接在 @ 後面的台詞，:表情名稱: 會換成伺服器表情；留空沿用，填 default 恢復預設')
+      .setMaxLength(200)))
   .addSubcommand((s) => s
     .setName('scan').setDescription('把這一區的歷史訊息補進紀錄（只記錄，不刪訊息）')
     .addStringOption((o) => o.setName('zone').setDescription('分區').setAutocomplete(true).setRequired(true))
@@ -220,6 +226,8 @@ async function deleteNotice(interaction, guildId) {
   if (!getDupeZone(guildId, zoneName)) return reply(interaction, `找不到分區 **${zoneName}**。`);
   const enabled = interaction.options.getBoolean('enabled');
   const input = interaction.options.getString('sticker')?.trim();
+  const messageInput = interaction.options.getString('message')?.trim();
+  const deleteMessage = !messageInput ? undefined : messageInput.toLowerCase() === 'default' ? null : messageInput;
 
   let deleteStickerId;
   let sticker = null;
@@ -233,7 +241,7 @@ async function deleteNotice(interaction, guildId) {
     deleteStickerId = sticker.id;
   }
 
-  const zone = updateDupeZone(guildId, zoneName, { deletePing: enabled, deleteStickerId });
+  const zone = updateDupeZone(guildId, zoneName, { deletePing: enabled, deleteStickerId, deleteMessage });
   if (!zone.delete_ping) {
     return reply(interaction, `✅ **${zone.zone}**：刪除重複時靜默刪除，不 @ 當事人。`);
   }
@@ -244,7 +252,11 @@ async function deleteNotice(interaction, guildId) {
   const lines = [
     `✅ **${zone.zone}**：刪除重複時會 @ 當事人${zone.delete_sticker_id ? `，並貼出 **${sticker?.name ?? zone.delete_sticker_id}**` : '（純文字）'}。`,
   ];
-  if (zone.delete_sticker_id && !sticker) lines.push('⚠️ 這張貼圖已經不在了，會改發文字。');
+  const line = renderEmojis(zone.delete_message ?? DEFAULT_DELETE_MESSAGE, interaction.guild);
+  lines.push(`台詞：@當事人 ${line}`);
+  const missing = [...line.matchAll(/(?<!<a?):([\w~]{2,32}):/g)].map((m) => m[0]);
+  if (missing.length) lines.push(`⚠️ 這個伺服器找不到表情 ${missing.join(' ')}，會照原樣以文字送出。`);
+  if (zone.delete_sticker_id && !sticker) lines.push('⚠️ 這張貼圖已經不在了，會只發台詞。');
   if (zone.action !== 'delete') lines.push(`（這一區目前是「${ACTION_LABEL[zone.action]}」，要改成刪除模式才會用到）`);
   return reply(interaction, lines.join('\n'));
 }

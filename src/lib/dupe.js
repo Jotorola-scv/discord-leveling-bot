@@ -317,21 +317,27 @@ export async function handleLatePreview(message) {
   return deletePreview(message);
 }
 
+export const DEFAULT_DELETE_MESSAGE = '你的鏈接重複了 :DoraCare:';
+
+/** :名稱: 換成這個伺服器的自訂表情；找不到的照原樣留著 */
+export function renderEmojis(text, guild) {
+  return String(text ?? '').replace(/(?<!<a?):([\w~]{2,32}):/g, (raw, name) => {
+    const emoji = guild.emojis?.cache?.find((e) => e.name === name);
+    return emoji ? emoji.toString() : raw;
+  });
+}
+
 /**
- * 刪掉重複之後 mention 當事人，有設貼圖就附上。
- * 貼圖被刪或不能用時退回純文字，不讓這一步把去重弄壞。
+ * 刪掉重複之後 mention 當事人並說一句台詞，有設貼圖就附上。
+ * 貼圖被刪或不能用時只發文字，不讓這一步把去重弄壞。
  */
 async function sendDeleteNotice(message, zone, perms) {
   if (!perms?.has(PermissionFlagsBits.SendMessages)) return;
   const allowedMentions = { users: [message.author.id] };
-  const text = {
-    content: `🔁 ${message.author} 這條連結在 **${zone.zone}** 已經有人貼過了。`,
-    allowedMentions,
-  };
+  const line = renderEmojis(zone.delete_message ?? DEFAULT_DELETE_MESSAGE, message.guild);
+  const text = { content: `${message.author} ${line}`.trim(), allowedMentions };
   try {
-    await message.channel.send(zone.delete_sticker_id
-      ? { content: `${message.author}`, stickers: [zone.delete_sticker_id], allowedMentions }
-      : text);
+    await message.channel.send(zone.delete_sticker_id ? { ...text, stickers: [zone.delete_sticker_id] } : text);
   } catch (err) {
     if (!zone.delete_sticker_id) {
       console.warn(`[dupe] 刪除通知發送失敗: ${err.message}`);

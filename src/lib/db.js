@@ -226,6 +226,7 @@ ensureColumn('member_levels', 'last_link_bonus_at', 'INTEGER NOT NULL DEFAULT 0'
 ensureColumn('member_levels', 'last_content_hash', 'TEXT');
 ensureColumn('dupe_zones', 'delete_ping', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('dupe_zones', 'delete_sticker_id', 'TEXT');
+ensureColumn('dupe_zones', 'delete_message', 'TEXT');
 
 // 17.11 的建議預設只對「還停在舊預設 0」的既有伺服器套一次，之後 Owner 改回 0 不會被蓋掉
 if (!getMeta.get('v1.1-antiabuse-defaults')) {
@@ -604,13 +605,14 @@ export function ensureDupeZone(guildId, zone) {
   return getDupeZone(guildId, zone);
 }
 
-export function updateDupeZone(guildId, zone, { action, noticeSeconds, deletePing, deleteStickerId }) {
+export function updateDupeZone(guildId, zone, { action, noticeSeconds, deletePing, deleteStickerId, deleteMessage }) {
   const sets = [];
   const args = [];
   if (action !== undefined) { sets.push('action = ?'); args.push(action); }
   if (noticeSeconds !== undefined) { sets.push('notice_seconds = ?'); args.push(noticeSeconds); }
   if (deletePing !== undefined) { sets.push('delete_ping = ?'); args.push(deletePing ? 1 : 0); }
   if (deleteStickerId !== undefined) { sets.push('delete_sticker_id = ?'); args.push(deleteStickerId); }
+  if (deleteMessage !== undefined) { sets.push('delete_message = ?'); args.push(deleteMessage); }
   if (sets.length === 0) return getDupeZone(guildId, zone);
   db.prepare(`UPDATE dupe_zones SET ${sets.join(', ')} WHERE guild_id = ? AND zone = ?`)
     .run(...args, guildId, zone);
