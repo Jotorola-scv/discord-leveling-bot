@@ -317,6 +317,37 @@ export async function handleLatePreview(message) {
   return deletePreview(message);
 }
 
+export const DEFAULT_DELETE_MESSAGE = '你的鏈接重複了 :DoraCare:';
+
+/** :名稱: 換成這個伺服器的自訂表情；找不到的照原樣留著 */
+export function renderEmojis(text, guild) {
+  return String(text ?? '').replace(/(?<!<a?):([\w~]{2,32}):/g, (raw, name) => {
+    const emoji = guild.emojis?.cache?.find((e) => e.name === name);
+    return emoji ? emoji.toString() : raw;
+  });
+}
+
+/**
+ * 刪掉重複之後 mention 當事人並說一句台詞，有設貼圖就附上。
+ * 貼圖被刪或不能用時只發文字，不讓這一步把去重弄壞。
+ */
+async function sendDeleteNotice(message, zone, perms) {
+  if (!perms?.has(PermissionFlagsBits.SendMessages)) return;
+  const allowedMentions = { users: [message.author.id] };
+  const line = renderEmojis(zone.delete_message ?? DEFAULT_DELETE_MESSAGE, message.guild);
+  const text = { content: `${message.author} ${line}`.trim(), allowedMentions };
+  try {
+    await message.channel.send(zone.delete_sticker_id ? { ...text, stickers: [zone.delete_sticker_id] } : text);
+  } catch (err) {
+    if (!zone.delete_sticker_id) {
+      console.warn(`[dupe] 刪除通知發送失敗: ${err.message}`);
+      return;
+    }
+    console.warn(`[dupe] ${zone.zone} 的貼圖 ${zone.delete_sticker_id} 發不出去（${err.message}），改發文字`);
+    await message.channel.send(text).catch((e) => console.warn(`[dupe] 刪除通知發送失敗: ${e.message}`));
+  }
+}
+
 /**
  * 監看區裡的重複連結處理。每區各自獨立：同一條連結在深水區貼過，淺水區還是能貼。
  * 跟 XP／關鍵字觸發完全無關，不給也不扣 XP。
@@ -384,7 +415,9 @@ export async function handleLinkDupes(message) {
     }
   }
 
-  // 刪掉就不吭聲，當事人不另行通知。只有「沒刪」的情況才需要講一句
+  if (deleted && zone.delete_ping) await sendDeleteNotice(message, zone, perms);
+
+  // 刪除通知預設關閉（靜默刪除）。「沒刪」的情況才需要講一句
   if (!deleted && zone.notice_seconds > 0 && perms?.has(PermissionFlagsBits.SendMessages)) {
     const lines = [
       `🔁 ${message.author} 這條連結在 **${zone.zone}** 已經有人貼過了。`,
